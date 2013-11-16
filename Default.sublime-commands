@@ -1,0 +1,14 @@
+[
+  {
+  	"caption": "Github: Open Settings",
+  	"command": "github_connect"
+  },
+  {
+    "caption": "Github: New Issue",
+    "command": "github_new_issue"
+  },
+  {
+    "caption": "Github: Close Issue",
+    "command": "github_close_issue"
+  }
+]
