@@ -1,82 +1,150 @@
 import sublime, sublime_plugin
 import urllib2
 import json
+import sys
+import os
+
+sys.path.append(os.path.join(os.path.dirname(__file__), "requests"))
+import requests
+
+
+class Repo():
+	def __init__(self):
+		self.url = None
+		self.repo = None
+		self.user = None
+		self.collaborators = []
+		self.issues = {}
+
+	def getRepoInfoFromSettings(self, settingsName='Github Issues.sublime-settings'):
+		settings = sublime.load_settings(settingsName)
+		self.url = settings.get('github_url')
+		self.user = settings.get('github_username')
+		self.repo = settings.get('github_repo')
+
+	def getCollaborators(self):
+
+		if self.url and self.user and self.repo:
+			r = requests.get(self.url + '/repos/' + self.user + '/' + self.repo + '/collaborators')
+
+			if r.status_code == requests.codes.ok:
+				data = r.json()
+
+				for item in data:
+					collaborator = {}
+					collaborator['id'] = item['id']
+					collaborator['login'] = item['login']
+					collaborator['url'] = item['url']
+
+					r2 = requests.get(collaborator['url'])
+					
+					if r2.status_code == requests.codes.ok:
+						nameData = r2.json()
+						if 'name' in nameData:
+							collaborator['name'] = nameData['name']
+						else:
+							collaborator['name'] = 'no name provided'
+
+					self.collaborators.append(collaborator)
+
+			else:
+				print 'could not get collaborators'
+
+	def getIssues(self):
+		
+		if self.url and self.user and self.repo:
+			r = requests.get(self.url + '/repos/' + self.user + '/' + self.repo + '/issues?state=open')
+
+			if r.status_code == requests.codes.ok:
+				data = r.json()
+
+				for issue in data:
+					if issue['assignee']:
+						id = issue['assignee']['id']
+						if id not in self.issues:
+							self.issues[id] = []
+						self.issues[id].append(issue)
+					else:
+						id = 'none'
+						if id not in self.issues:
+							self.issues[id] = []
+						self.issues[id].append(issue)
+
+			else:
+				print 'could not get issues'
+
+	def closeIssue(self, issue, password):
+
+		# close the issue
+		r = requests.patch(self.url + '/repos/' + self.user + '/' + self.repo + '/issues/' + str(issue.number), auth=(self.user, password), data='{"state":"closed"}')
+		if r.status_code == requests.codes.ok:
+			print "ok, closed the issue"
+		else:
+			print "failed to close the issue"
+
+		# add the comment
+		if issue.comment:
+			r = requests.post(self.url + '/repos/' + self.user + '/' + self.repo + '/issues/' + str(issue.number) + '/comments', auth=(self.user, password), data='{"body":"' + issue.comment + '"}')
+			if r.status_code == requests.codes.ok or r.status_code == 201:
+				print "ok, added the comment"
+			else:
+				print "failed to add the comment"
+
+class Issue():
+	def __init__(self):
+		self.collaborator = None
+		self.number = None
+		self.title = None
+		self.body = None
+		self.assignee = None
+		self.comment = None
+
+	def clear(self):
+		self.collaborator = None
+		self.number = None
+		self.title = None
+		self.body = None
+		self.assignee = None
+		self.comment = None
 
 class GithubCloseIssueCommand(sublime_plugin.WindowCommand):
 
-	collaborators = []
-	collaboratorData = None
+	def __init__(self, window):
+		self.window = window
 
-	issues = []
-	issueData = None
+		# the repo stuff
+		self.repo = Repo()
+		self.repo.getRepoInfoFromSettings()
+		self.repo.getCollaborators()
+		self.repo.getIssues()
+
+		# the issue stuff
+		self.issue = Issue()
 
 	def run(self):
 
-		sublime.message_dialog(sublime.packages_path())
+		collaboratorList = []
 
-		# just read the list if it already exists
-		if len(self.collaborators) > 0:
-			self.window.show_quick_panel(self.collaborators, self.select_collaborator)
-			return
-		
-		# first read the settings
-		settings = sublime.load_settings('Github Issues.sublime-settings')
-		url = settings.get('github_url')
-		username = settings.get('github_username')
-		repo = settings.get('github_repo')
+		for collaborator in self.repo.collaborators:
+			collaboratorList.append([collaborator['login'], collaborator['name']])
 
-		# call githhub to get the collaborators
-		req = urllib2.Request(url + '/api/v3/repos/' + username + '/' + repo + '/collaborators')
-		response = urllib2.urlopen(req)
-		self.collaboratorData = json.loads(response.read())
-
-		# now parse the data
-		for collaborator in self.collaboratorData:
-			item = []
-			item.append(collaborator['login'])
-
-			# get the name of the assignee
-			req = urllib2.Request(collaborator['url'])
-			response = urllib2.urlopen(req)
-			name = json.loads(response.read())
-
-			if 'name' in name:
-				item.append(name['name'])
-			else:
-				item.append('no name provided')
-
-			self.collaborators.append(item)
-
-		self.collaborators.append(['unassigned', 'close an issue that is currently unassigned'])
+		collaboratorList.append(['unassigned', 'close an issue that is currently unassigned'])
 
 		# and finally display the issues
-		self.window.show_quick_panel(self.collaborators, self.select_collaborator)
-
+		self.window.show_quick_panel(collaboratorList, self.select_collaborator)
 
 	def select_collaborator(self, index):
 
-		# clear the current issues
-		self.issues[:] = []
+		issueList = []
+		
+		if index == len(self.repo.collaborators):
+			self.issue.collaborator = self.repo.collaborators['none']
+			collaborator = 'none'
+		else:
+			self.issue.collaborator = self.repo.collaborators[index]
+			collaborator = self.repo.collaborators[index]['id']
 
-		# first read the settings
-		settings = sublime.load_settings('Github Issues.sublime-settings')
-		url = settings.get('github_url')
-		username = settings.get('github_username')
-		repo = settings.get('github_repo')
-
-		# get the collaborator
-		if index == len(self.collaborators)-1:
-			assignee = 'none'
-		elif index >= 0:
-			assignee = self.collaborators[index][0]
-
-		# now call github to get the open issues
-		req = urllib2.Request(url + '/api/v3/repos/' + username + '/' + repo + '/issues?state=open&assignee=' + assignee)
-		response = urllib2.urlopen(req)
-		self.issueData = json.loads(response.read())
-
-		# now parse the issues
-		for item in self.issueData:
+		for item in self.repo.issues[collaborator]:
 			issue = []
 			issue.append(item['title'])
 
@@ -86,21 +154,25 @@ class GithubCloseIssueCommand(sublime_plugin.WindowCommand):
 				issue.append('no description given')
 
 			if item['assignee']:
-				issue.append(item['assignee']['login'])
+				name = self.repo.collaborators[index]['name']
+				issue.append(item['assignee']['login'] + ' - ' + name)
 			else:
 				issue.append('unassigned')
 
-			self.issues.append(issue)
-
-		if len(self.issues) == 0:
-			sublime.message_dialog("No issues assigned to " + assignee)
-			return
+			issueList.append(issue)
 
 		# and finally display the issues
-		self.window.show_quick_panel(self.issues, self.close_issue)
+		self.window.show_quick_panel(issueList, self.get_comment)
 
-	def close_issue(self, index):
-		sublime.message_dialog(str(self.issueData[index]['number']))
+	def get_comment(self, index):
+		self.issue.number = self.repo.issues[self.issue.collaborator['id']][index]['number']
+		self.window.show_input_panel('comment', '', self.get_password, None, None)
 
-		# now excute the equivalent of this curl:
-		# curl -X PATCH --data '{"title":"get rid of additional tag in tiles", "state":"closed"}' -u i834997:password https://github.wdf.sap.corp/api/v3/repos/i834997/Constellations/issues/21 
+	def get_password(self, comment):
+		if self.issue.comment != "":
+			self.issue.comment = comment
+		self.window.show_input_panel('password', '', self.close_issue, None, None)
+
+	def close_issue(self, password):
+		self.repo.closeIssue(self.issue, password)
+		self.issue.clear()
